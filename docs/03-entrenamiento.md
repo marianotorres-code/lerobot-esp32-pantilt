@@ -138,6 +138,50 @@ los episodios de evaluación se ejecutan en serie y tarda más.
 `dataloader_multiprocessing_context: str | None = "spawn"`. El bug está solo en
 los entornos de simulación.)
 
+### 5 (bonus) — perder 53 minutos por poner mal `save_freq`
+
+Este no es un fallo de LeRobot, es un fallo mío, y lo dejo escrito porque es el
+tipo de error que se comete una vez.
+
+Lancé la primera corrida con `--steps=30000 --save_freq=10000`. El proceso se
+interrumpió en el paso **5.974**, tras 53 minutos. Como el primer guardado no
+tocaba hasta el paso 10.000, **no había ningún checkpoint**. Todo perdido.
+
+`save_freq` no es solo "cada cuánto quiero un modelo". Es **cuánto trabajo estoy
+dispuesto a perder**. En una corrida larga y desatendida, guardar cada 2.500
+pasos cuesta unos megas de disco y convierte una interrupción de una hora en una
+de diez minutos.
+
+LeRobot soporta `--resume=true` para continuar desde `checkpoints/last`, pero eso
+solo sirve si hay un `last` que reanudar.
+
+Relanzado con `--steps=15000 --save_freq=2500 --env_eval_freq=5000`.
+
+## Cómo leer el log
+
+El log mezcla la barra de progreso de tqdm con las líneas INFO. tqdm reescribe
+su línea con retornos de carro (`\r`), así que las entradas INFO quedan pegadas
+al final de líneas larguísimas y un `grep` normal engaña: parece que hay 3
+puntos de log cuando hay 23.
+
+[`scripts/parse_train_log.py`](../scripts/parse_train_log.py) convierte los `\r`
+en saltos de línea antes de parsear:
+
+```powershell
+& $PY scripts\parse_train_log.py D:\robotics-lab\logs_act_pusht.txt --every 4
+```
+
+Las tres pérdidas que reporta ACT y qué significan:
+
+| Campo | Qué es |
+|---|---|
+| `l1_loss` | error absoluto entre las acciones predichas y las del humano. **Es la que importa** |
+| `kld_loss` | divergencia KL del CVAE: cuánto se aleja el espacio latente de una normal |
+| `loss` | la suma ponderada de ambas, que es lo que se minimiza |
+
+Vigilar `loss` a secas puede despistar: al principio baja sobre todo porque cae
+la `kld_loss`, no porque el modelo prediga mejor las acciones.
+
 ## Rendimiento en una RTX 3050
 
 | | |
