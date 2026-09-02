@@ -275,17 +275,70 @@ completo funcionó de punta a punta. Los tropiezos 1, 3 y 4 aparecieron aquí, e
 Es la lección más transferible de toda la Parte A: **verifica el camino completo
 con la configuración más pequeña posible antes de gastar tiempo de cómputo.**
 
+## Sacar la evaluación fuera del bucle de entrenamiento
+
+Empecé con `--env_eval_freq=5000`, o sea evaluando en simulación cada 5.000
+pasos dentro del propio entrenamiento. **Fue mala idea**, por dos razones que
+solo se ven al hacerlo:
+
+1. **Es lenta y bloquea.** Con `use_async_envs=false` (obligatorio en Windows,
+   tropiezo 4) los 20 episodios se ejecutan en serie: 76 segundos parado. Y
+   durante ese rato la utilización de la GPU se hunde, porque el simulador
+   `pusht` corre en CPU.
+2. **Acopla dos cosas que deberían ser independientes.** Si la evaluación falla
+   o se cuelga, se lleva por delante el entrenamiento entero.
+
+Separadas, el entrenamiento pasó de **~32 % a ~80 % de utilización de GPU**.
+
+La forma correcta: `--env_eval_freq=0` para desactivar la evaluación interna, y
+evaluar los checkpoints por separado cuando te venga bien.
+
+```powershell
+& $PY -m lerobot.scripts.lerobot_eval `
+  --policy.path=D:\robotics-lab\outputs\act_pusht\checkpoints\005000\pretrained_model `
+  --env.type=pusht --eval.n_episodes=20 --eval.batch_size=10 `
+  --eval.use_async_envs=false --policy.device=cuda `
+  --output_dir=D:\robotics-lab\outputs\eval_5000
+```
+
+Ventaja añadida: puedes reevaluar cualquier checkpoint viejo sin reentrenar.
+
 ## Resultados
 
-*(pendiente — el entrenamiento está corriendo mientras escribo esto)*
+*(el entrenamiento sigue corriendo; relleno la tabla conforme salen los
+checkpoints)*
 
-| Pasos | pérdida | `pc_success` |
-|---|---|---|
-| 5 | 64,73 | — |
-| 500 | 1,95 | — |
-| 10.000 | | |
-| 20.000 | | |
-| 30.000 | | |
+### Pérdida
+
+| Pasos | `loss` | `l1_loss` | `kld_loss` |
+|---|---|---|---|
+| 5 | 64,73 | 0,781 | 6,395 |
+| 250 | 4,922 | 0,565 | 0,436 |
+| 1.000 | 1,153 | 0,402 | 0,075 |
+| 2.000 | 0,602 | 0,337 | 0,027 |
+| 3.000 | 0,377 | 0,286 | 0,009 |
+
+### Evaluación en simulación (20 episodios)
+
+| Checkpoint | `pc_success` | `avg_max_reward` | `avg_sum_reward` |
+|---|---|---|---|
+| 10 pasos (prueba) | 0 % | 0,008 | 2,42 |
+| 5.000 pasos | 0 % | **0,250** | **22,85** |
+
+`pc_success` sigue en 0 %, pero **las otras dos métricas se han multiplicado por
+30 y por 9**. Eso es lo que hay que mirar cuando la tasa de éxito todavía es
+cero: la recompensa de `pusht` es la fracción del objetivo cubierta por la
+pieza, así que pasar de 0,008 a 0,25 significa que la política ha aprendido a
+empujar la pieza **hacia** el objetivo, pero no a colocarla con la precisión que
+exige contar como éxito.
+
+Es un resultado más informativo que un 0 % pelado, y la razón de que merezca la
+pena mirar varias métricas: si solo miras `pc_success` concluyes "no aprende
+nada", cuando lo cierto es "aprende la parte fácil de la tarea".
+
+Los diez vídeos de los rollouts están en
+`D:\robotics-lab\outputs\eval_5000\videos\`, y son la forma más rápida de ver
+*cómo* falla en vez de solo cuánto.
 
 ### Expectativa honesta
 
