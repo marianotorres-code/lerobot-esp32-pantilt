@@ -41,14 +41,23 @@ def parse(path: Path) -> tuple[list[dict], list[float]]:
     # entradas INFO quedan escondidas dentro de líneas larguísimas.
     text = path.read_text(encoding="utf-8", errors="replace").replace("\r", "\n")
 
+    lines = text.splitlines()
+
     rows: list[dict] = []
-    for line in text.splitlines():
+    for i, line in enumerate(lines):
         m = LINE_RE.search(line)
         if not m:
             continue
         row = m.groupdict()
-        l1 = L1_RE.search(line)
-        kld = KLD_RE.search(line)
+
+        # `l1_loss` y `kld_loss` van al final de la línea INFO, pero la
+        # redirección `*>` de PowerShell CORTA las líneas largas al ancho de la
+        # consola. El resultado es que esos dos campos acaban en una línea
+        # distinta de `step:`, y buscarlos solo en la misma línea los pierde.
+        # Miro también las dos siguientes.
+        window = " ".join(lines[i : i + 3])
+        l1 = L1_RE.search(window)
+        kld = KLD_RE.search(window)
         row["l1"] = l1.group("l1") if l1 else ""
         row["kld"] = kld.group("kld") if kld else ""
         rows.append(row)

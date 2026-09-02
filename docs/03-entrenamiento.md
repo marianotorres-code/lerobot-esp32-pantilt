@@ -179,8 +179,43 @@ Las tres pérdidas que reporta ACT y qué significan:
 | `kld_loss` | divergencia KL del CVAE: cuánto se aleja el espacio latente de una normal |
 | `loss` | la suma ponderada de ambas, que es lo que se minimiza |
 
-Vigilar `loss` a secas puede despistar: al principio baja sobre todo porque cae
-la `kld_loss`, no porque el modelo prediga mejor las acciones.
+**Vigilar `loss` a secas despista, y aquí están los números que lo demuestran:**
+
+| paso | `loss` | `l1_loss` | `kld_loss` |
+|---|---|---|---|
+| 250 | 4,922 | 0,565 | 0,436 |
+| 500 | 1,946 | 0,469 | 0,148 |
+| 1.000 | 1,153 | 0,402 | 0,075 |
+| 2.000 | 0,602 | 0,337 | 0,027 |
+| 3.000 | 0,377 | 0,286 | 0,009 |
+
+La pérdida total cayó **13×** (4,92 → 0,38). El error de predicción real, que es
+`l1_loss`, solo mejoró **2×** (0,565 → 0,286). Casi toda la caída espectacular
+es el término KL colapsando.
+
+La relación es exacta: ACT usa `kl_weight = 10` por defecto, así que
+
+```
+loss = l1_loss + 10 × kld_loss
+```
+
+Comprobándolo al paso 250: `0,565 + 10 × 0,436 = 4,925`. Y al paso 3.000:
+`0,286 + 10 × 0,009 = 0,376`. Cuadra.
+
+O sea que una curva de `loss` que se desploma en las primeras iteraciones puede
+significar únicamente que el espacio latente del CVAE se ha regularizado, no que
+la política haya aprendido nada de la tarea. **Mira `l1_loss`.**
+
+### Una peculiaridad de Windows al guardar el log
+
+Si rediriges con `*>` en PowerShell, **las líneas largas se cortan al ancho de
+la consola**. La línea INFO de LeRobot es más ancha que eso, así que `l1_loss` y
+`kld_loss` acaban en una línea distinta de `step:`, y cualquier parser que los
+busque en la misma línea los pierde en silencio (yo escribí uno así primero, y
+las columnas salían vacías sin dar ningún error).
+
+`parse_train_log.py` mira una ventana de tres líneas para reunir los campos
+partidos.
 
 ## Rendimiento en una RTX 3050
 
