@@ -9,6 +9,10 @@ usa LeRobot, y entrenar una política sobre ellas.
 > montada mientras escribo esto. Todo lo que aparece aquí marcado como
 > *verificado* lo he ejecutado; el resto está marcado como *sin probar*. No voy
 > a fingir resultados que no tengo.
+>
+> Lo que **sí** está verificado, y es la afirmación central del punto 5, es que
+> el formato que produce el grabador es un `LeRobotDataset` válido y entrenable.
+> Ver [Verificación sin hardware](#verificación-sin-hardware) al final.
 
 ## Por qué un pan/tilt y no un brazo
 
@@ -232,6 +236,81 @@ learning la **consistencia** de las demostraciones importa más que la cantidad.
 
 Con 100 episodios de ~10 segundos a 30 Hz salen unos 30.000 frames, el mismo
 orden de magnitud que `lerobot/pusht`.
+
+## Verificación sin hardware
+
+No tengo la plataforma montada, pero la afirmación importante del punto 5 —
+*"usa el mismo formato de LeRobot para que sea compatible"* — sí se puede
+comprobar. Hay dos pruebas, y son dos cosas distintas.
+
+### 1. ¿Se puede *leer*?
+
+[`scripts/test_dataset_roundtrip.py`](../scripts/test_dataset_roundtrip.py)
+
+Simula el pan/tilt (reproduciendo el slew rate limiter del firmware) y la
+webcam, graba 3 episodios con el mismo código de features y el mismo orden de
+bucle que el grabador real, y después reabre el resultado con `LeRobotDataset`.
+
+```
+  [OK ] episodios                              3  (esperado 3)
+  [OK ] frames                                 60  (esperado 60)
+  [OK ] fps                                    30  (esperado 30)
+  [OK ] robot_type                             esp32_pantilt
+  [OK ] shape de la imagen                     (3, 120, 160)
+  [OK ] shape de observation.state             (2,)
+  [OK ] shape de action                        (2,)
+  [OK ] imagen normalizada a [0,1]             [0.000, 1.000]
+  [OK ] state va por detras de action          |action-state| medio = 1.9012
+  [OK ] chunk de acciones para ACT             (8, 2)
+```
+
+La estructura en disco generada es idéntica a la de los datasets públicos:
+
+```
+data/chunk-000/file-000.parquet                            8.4 KB
+meta/episodes/chunk-000/file-000.parquet                  43.3 KB
+meta/info.json                                             2.5 KB
+meta/stats.json                                            7.9 KB
+meta/tasks.parquet                                         2.1 KB
+videos/observation.images.webcam/chunk-000/file-000.mp4    10.0 KB
+```
+
+La comprobación que más me importaba es la penúltima: `state` va **por detrás**
+de `action`. Si el firmware saltara al objetivo, ambos serían el mismo número y
+el dataset no tendría dinámica que aprender, pero la prueba pasaría igualmente.
+
+### 2. ¿Se puede *entrenar*?
+
+[`scripts/test_train_on_own_dataset.py`](../scripts/test_train_on_own_dataset.py)
+
+Que un dataset se lea no significa que se pueda entrenar. El lector es
+tolerante; el entrenador no: exige que las features estén clasificadas
+correctamente como estado / visual / acción, que existan las estadísticas de
+normalización, y que el `chunk_size` encaje con la longitud de los episodios.
+
+Esta prueba genera 8 episodios de 40 frames y lanza `lerobot-train` de verdad
+(4 pasos, en CPU para no competir con ningún entrenamiento real):
+
+```
+  [OK ] lerobot-train sale con codigo 0
+  [OK ] checkpoint escrito en pretrained_model
+        contenido: config.json, model.safetensors,
+                   policy_postprocessor.json,
+                   policy_postprocessor_step_0_unnormalizer_processor.safetensors,
+                   policy_preprocessor.json,
+                   policy_preprocessor_step_3_normalizer_processor.safetensors,
+                   train_config.json
+```
+
+Que aparezcan los `normalizer_processor` es la señal de que LeRobot reconoció
+las features y calculó la normalización a partir de mi `meta/stats.json`. Eso es
+lo que separa "escribí un dict con las claves correctas" de "esto es un dataset
+de LeRobot".
+
+**Lo que estas pruebas NO demuestran:** que el firmware funcione en una placa
+real, que los servos se muevan, que la webcam sincronice bien con el serial, ni
+que la política aprenda algo. Con datos sintéticos aleatorios no hay nada que
+aprender — la prueba es de formato, no de aprendizaje.
 
 ## Entrenar sobre el dataset propio
 
