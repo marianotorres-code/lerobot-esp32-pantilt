@@ -22,6 +22,26 @@ import torch
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 
+def feature_names(spec: dict) -> list[str]:
+    """Devuelve los nombres de dimensión de una feature como lista plana.
+
+    El campo ``names`` no tiene una forma única entre datasets: puede ser una
+    lista (``["pan", "tilt"]``), un dict que agrupa por tipo de motor
+    (``{"motors": [...]}``, como en los datasets de aloha), o faltar del todo.
+    En `lerobot/pusht` es un dict, y asumir que era lista me costó un
+    ``KeyError: 0``.
+    """
+    names = spec.get("names")
+    if names is None:
+        return []
+    if isinstance(names, dict):
+        flat: list[str] = []
+        for value in names.values():
+            flat.extend(value if isinstance(value, list) else [value])
+        return [str(x) for x in flat]
+    return [str(x) for x in names]
+
+
 def sizeof(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if abs(n) < 1024:
@@ -57,8 +77,8 @@ def show_features(ds: LeRobotDataset) -> None:
     print(f"{'clave':36s} {'dtype':9s} {'shape':16s} nombres")
     print("-" * 78)
     for key, spec in ds.meta.features.items():
-        names = spec.get("names")
-        names_str = ", ".join(names) if isinstance(names, list) and len(names) <= 6 else ""
+        names = feature_names(spec)
+        names_str = ", ".join(names) if 0 < len(names) <= 6 else ""
         print(f"{key:36s} {spec['dtype']:9s} {str(tuple(spec['shape'])):16s} {names_str}")
 
 
@@ -98,17 +118,25 @@ def show_state_action(ds: LeRobotDataset) -> None:
     print(f"muestreados {len(s)} frames\n")
     print(f"{'dim':5s} {'state min':>11s} {'state max':>11s} {'action min':>11s} {'action max':>11s}")
     print("-" * 55)
-    names = ds.meta.features["observation.state"].get("names") or []
+    names = feature_names(ds.meta.features["observation.state"])
     for d in range(s.shape[1]):
         label = names[d] if d < len(names) else str(d)
         print(f"{str(label)[:5]:5s} {s[:, d].min():11.3f} {s[:, d].max():11.3f} "
               f"{a[:, d].min():11.3f} {a[:, d].max():11.3f}")
 
     if s.shape == a.shape:
-        diff = np.abs(a - s).mean()
-        scale = np.abs(s).mean() + 1e-8
-        print(f"\n|action - state| medio: {diff:.4f}  ({100 * diff / scale:.1f}% de la escala del estado)")
-        if diff / scale < 0.15:
+        # Normalizo por el RANGO de cada dimensión, no por la media absoluta.
+        # Primera versión usaba la media y daba un resultado engañoso en aloha:
+        # sus articulaciones van en radianes centrados en cero, así que la media
+        # absoluta es diminuta y cualquier diferencia parece enorme (15.6%)
+        # aunque state y action fueran casi idénticos. El rango no tiene ese
+        # problema porque no depende de dónde esté el cero.
+        per_dim_diff = np.abs(a - s).mean(axis=0)
+        per_dim_range = (s.max(axis=0) - s.min(axis=0)) + 1e-8
+        ratio = float((per_dim_diff / per_dim_range).mean())
+        print(f"\n|action - state| medio: {np.abs(a - s).mean():.4f}")
+        print(f"como fracción del rango de cada dimensión: {100 * ratio:.1f}%")
+        if ratio < 0.10:
             print("-> action y state viven en el MISMO espacio: la acción es una")
             print("   posición objetivo de las articulaciones, no una velocidad ni")
             print("   un par. Es lo normal en LeRobot (ver docs/01-conceptos.md).")
@@ -119,19 +147,50 @@ def show_state_action(ds: LeRobotDataset) -> None:
 
 def show_episodes(ds: LeRobotDataset) -> None:
     section("5. EPISODIOS — dónde empieza y acaba cada demostración")
-    print("Los frames de todos los episodios están concatenados en un solo índice")
-    print("plano. `episode_data_index` guarda los cortes.\n")
-    starts = ds.episode_data_index["from"][:8].tolist()
-    ends = ds.episode_data_index["to"][:8].tolist()
-    print(f"{'episodio':>9s} {'desde':>9s} {'hasta':>9s} {'frames':>8s} {'segundos':>9s}")
+    print("Los frames de todos los episodios están concatenados en un único índice")
+    print("plano, y `meta.episodes` guarda los cortes.\n")
+    print("Nota de API: casi todos los tutoriales usan `ds.episode_data_index`.")
+    print("Ese atributo YA NO EXISTE en lerobot 0.6.2 — daba AttributeError. La")
+    print("información vive ahora en `ds.meta.episodes`, una tabla de HF datasets.\n")
+
+    df = ds.meta.episodes.to_pandas()
+    print("columnas de meta.episodes:")
+    for col in df.columns:
+        print(f"  {col}")
+
+    # Acceso por nombre y no con itertuples: varias columnas llevan '/' en el
+    # nombre y itertuples las renombra a _1, _2... perdiendo la correspondencia.
+    print(f"\n{'episodio':>9s} {'from_idx':>9s} {'to_idx':>9s} {'frames':>8s} {'segundos':>9s}")
     print("-" * 50)
-    for i, (a, b) in enumerate(zip(starts, ends)):
-        print(f"{i:9d} {a:9d} {b:9d} {b - a:8d} {(b - a) / ds.meta.fps:9.1f}")
-    lengths = (ds.episode_data_index["to"] - ds.episode_data_index["from"]).float()
+    for _, row in df.head(8).iterrows():
+        a, b = int(row["dataset_from_index"]), int(row["dataset_to_index"])
+        print(f"{int(row['episode_index']):9d} {a:9d} {b:9d} {b - a:8d} "
+              f"{(b - a) / ds.meta.fps:9.1f}")
+
+    lengths = df["length"]
     print(f"\nlongitud de episodio: min {lengths.min():.0f}, media {lengths.mean():.0f}, "
           f"max {lengths.max():.0f} frames")
     print("La variación importa: si unas demos duran el triple que otras, o la")
     print("tarea es de dificultad variable, o la teleoperación fue inconsistente.")
+
+    # Aquí está la diferencia de fondo entre v2.1 y v3.0.
+    video_cols = [c for c in df.columns if c.endswith("from_timestamp")]
+    if video_cols:
+        col = video_cols[0]
+        cam = col.split("/")[1]
+        to_col = col.replace("from_timestamp", "to_timestamp")
+        file_col = col.replace("from_timestamp", "file_index")
+        print(f"\nCómo localiza v3.0 el vídeo de un episodio (cámara '{cam}'):")
+        print(f"{'episodio':>9s} {'fichero':>8s} {'desde (s)':>10s} {'hasta (s)':>10s}")
+        print("-" * 42)
+        for _, row in df.head(5).iterrows():
+            print(f"{int(row['episode_index']):9d} {int(row[file_col]):8d} "
+                  f"{row[col]:10.1f} {row[to_col]:10.1f}")
+        print("\nFíjate en que el índice de fichero es el mismo para varios")
+        print("episodios: comparten un solo mp4 y cada uno es un RANGO DE")
+        print("TIEMPO dentro de él. Eso es lo que cambió del formato v2.1 (un")
+        print("mp4 por episodio) al v3.0, y por eso hace falta un decodificador")
+        print("capaz de buscar por timestamp — o sea, torchcodec.")
 
 
 def show_stats(ds: LeRobotDataset) -> None:
